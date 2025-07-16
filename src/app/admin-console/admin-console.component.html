@@ -1,3 +1,9 @@
 <main class="container">
     <button (click)="getFile()">Aggiungi un corso</button>
+    <p>Utenti scaduti</p>
+    <div *ngIf="users">
+        <div *ngFor="let name of users">
+            <app-account-button user="{{name}}"/>
+        </div>
+    </div>
 </main>

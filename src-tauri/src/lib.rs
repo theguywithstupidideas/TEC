@@ -11,8 +11,6 @@ use std::os::windows::ffi::OsStrExt;
 use std::path::Path;
 #[cfg(windows)]
 use std::ptr;
-#[cfg(windows)]
-use std::ptr::null;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 #[cfg(windows)]
 use windows::core::PCWSTR;
@@ -32,6 +30,8 @@ use windows::Win32::NetworkManagement::NetManagement::{
 use windows::Win32::NetworkManagement::NetManagement::{
     NetUserAdd, UF_NORMAL_ACCOUNT, USER_ACCOUNT_FLAGS, USER_INFO_2, USER_PRIV_USER,
 };
+#[cfg(windows)]
+use windows::Win32::NetworkManagement::NetManagement::{NetUserDel, USER_INFO_1};
 
 #[cfg(windows)]
 #[tauri::command]
@@ -155,7 +155,7 @@ fn read_event(file_path: &Path) -> Result<Vec<String>, String> {
                 Err(e) => return Err(format!("Error reading from file: {}", e)),
             }
 
-            match NaiveDate::parse_from_str(&data_list[1], "%m/%d/%Y") {
+            match NaiveDate::parse_from_str(&data_list[1], "%d/%m/%Y") {
                 Ok(..) => {  }
                 Err(e) => return Err(format!("Error parsing date: {}", e)),
             }
@@ -240,7 +240,7 @@ fn clean_up() -> Result<Vec<String>, String> {
 }
 
 fn parse_exp(date: &str) -> Option<SystemTime> {
-    let date = NaiveDate::parse_from_str(date, "%m/%d/%Y").ok()?;
+    let date = NaiveDate::parse_from_str(date, "%d/%m/%Y").ok()?;
     let datetime = NaiveDateTime::new(date, chrono::NaiveTime::from_hms_opt(0, 0, 0)?);
     let timestamp = datetime.and_utc().timestamp();
 
@@ -292,37 +292,74 @@ fn group_add(username: &str, group_name: &str) -> Result<(), String> {
         }
     }
 }
-
 #[cfg(windows)]
-fn set_pass_exp(username: String) -> Result<String, String> {
+fn to_utf16_pcwstr(s: &str) -> Vec<u16> {
+    OsStr::new(s).encode_wide().chain(Some(0)).collect()
+}
+#[cfg(windows)]
+pub fn set_pass_exp(username: String) -> Result<String, String> {
     unsafe {
-        // Set UF_PASSWORD_EXPIRED flag (0x800000)
-        let mut user_info = USER_INFO_1008 {
-            usri1008_flags: UF_PASSWORD_EXPIRED,
+        let username_utf16 = to_utf16_pcwstr(&username);
+        let mut buffer: *mut c_void = ptr::null_mut();
+
+        // Get current user flags
+        let get_result = NetUserGetInfo(
+            PWSTR::null(), // local machine
+            PCWSTR(username_utf16.as_ptr()),
+            1,             // Level 1 has user flags
+            &mut buffer as *mut _ as *mut *mut u8,
+        );
+
+        if get_result != NERR_Success {
+            return Err(format!("NetUserGetInfo failed: {}", get_result));
+        }
+
+        let user_info = &*(buffer as *const USER_INFO_1);
+        let current_flags = user_info.usri1_flags;
+
+        // Set UF_PASSWORD_EXPIRED
+        let mut user_info_1008 = USER_INFO_1008 {
+            usri1008_flags: current_flags | UF_PASSWORD_EXPIRED,
         };
 
-        // Call NetUserSetInfo with level 1008
-        let result = NetUserSetInfo(
+        let set_result = NetUserSetInfo(
             PWSTR::null(), // local machine
-            PCWSTR::from_raw(
-                username
-                    .encode_utf16()
-                    .chain(Some(0))
-                    .collect::<Vec<u16>>()
-                    .as_ptr(),
-            ),
+            PCWSTR(username_utf16.as_ptr()),
             1008,
-            &mut user_info as *mut _ as *mut _,
+            &mut user_info_1008 as *mut _ as *mut _,
             Some(ptr::null_mut()),
         );
 
-        if result == NERR_Success {
+        // Free the buffer returned by NetUserGetInfo
+        NetApiBufferFree(Some(buffer));
+
+        if set_result == NERR_Success {
             Ok("Successfully set UF_PASSWORD_EXPIRED flag.".to_string())
         } else {
-            Err("An error has occurred.".to_string())
+            Err(format!("NetUserSetInfo failed: {}", set_result))
         }
     }
 }
+
+#[cfg(windows)]
+#[tauri::command]
+fn delete_user(username: String) -> Result<(), u32> {
+    let username_utf16 = to_utf16_pcwstr(&username);
+
+    unsafe {
+        let result = NetUserDel(
+            None,
+            PCWSTR(username_utf16.as_ptr()),
+        );
+
+        if result == NERR_Success {
+            Ok(())
+        } else {
+            Err(result)
+        }
+    }
+}
+
 
 fn read_sector(
     file: &File,
@@ -403,7 +440,9 @@ pub fn run() {
             create_user,
             read_event,
             #[cfg(windows)]
-            clean_up
+            clean_up,
+            #[cfg(windows)]
+            delete_user
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
