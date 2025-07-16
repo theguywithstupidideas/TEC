@@ -1,0 +1,9 @@
+<main class="container">
+    <ng-container *ngIf="adminStatus$ | async as adminStatus">
+        <div *ngIf="adminStatus.success && adminStatus.value">
+            <button (click)="testdbg('test')">Create Test User</button>
+            <button (click)="goAdminPanel()">Apri Console Tutor</button>
+        </div>
+        <button (click)="goAdminPanel()">Apri Console Tutor</button>
+    </ng-container>
+</main>
